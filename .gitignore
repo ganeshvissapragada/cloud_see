@@ -1,0 +1,5 @@
+# Ignore AWS pem key files
+*.pem
+
+# Ignore system files
+.DS_Store
