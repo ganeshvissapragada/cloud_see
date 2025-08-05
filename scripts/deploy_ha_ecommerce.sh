@@ -1,17 +1,16 @@
 #!/bin/bash
 
 # ======================================================================================
-# AWS High-Availability Deployment Script
+# AWS High-Availability Deployment Script with CloudFront CDN
 #
-# Deploys a PHP/MySQL app using an Application Load Balancer (ALB),
-# an Auto Scaling Group (ASG), and a scalable Aurora Serverless Database.
+# Deploys a PHP/MySQL app using ALB, ASG, Aurora Serverless, and CloudFront.
 # ======================================================================================
 
 set -e
 
 # --- Configuration ---
 AWS_REGION="us-east-1"
-PROJECT_NAME="fashiony-ha"
+PROJECT_NAME="fashiony-ha-cdn"
 # The name of your application's folder inside the Git repo.
 APP_FOLDER_NAME="php_app"
 INSTANCE_TYPE="t2.micro"
@@ -25,7 +24,7 @@ C_GREEN='\033[0;32m'
 C_YELLOW='\033[0;33m'
 C_NC='\033[0m'
 
-echo -e "${C_BLUE}### Starting High-Availability AWS Deployment ###${C_NC}"
+echo -e "${C_BLUE}### Starting High-Availability AWS Deployment with CloudFront ###${C_NC}"
 
 # --- User Input ---
 read -p "Enter your public GitHub repository URL (e.g., https://github.com/user/repo.git): " GIT_REPO_URL
@@ -36,8 +35,8 @@ if [ -z "$GIT_REPO_URL" ] || [ -z "$DB_MASTER_PASS" ]; then
     exit 1
 fi
 
-# === 1. Network Setup (VPC, Subnets, IGW, NAT, Routes) ===
-# (This section remains unchanged)
+# === 1. Network & Initial Setup ===
+# (This section is mostly unchanged)
 echo -e "${C_BLUE}--- Setting up Secure Network ---${C_NC}"
 VPC_ID=$(aws ec2 create-vpc --cidr-block 10.0.0.0/16 --query Vpc.VpcId --output text --region $AWS_REGION)
 aws ec2 create-tags --resources "$VPC_ID" --tags Key=Name,Value="${PROJECT_NAME}-vpc" --region $AWS_REGION
@@ -61,8 +60,6 @@ aws ec2 create-route --route-table-id "$PRIVATE_RT_ID" --destination-cidr-block 
 aws ec2 associate-route-table --subnet-id "$PRIVATE_SUBNET_1" --route-table-id "$PRIVATE_RT_ID" --region $AWS_REGION > /dev/null
 aws ec2 associate-route-table --subnet-id "$PRIVATE_SUBNET_2" --route-table-id "$PRIVATE_RT_ID" --region $AWS_REGION > /dev/null
 
-# === 2. Security Groups & IAM ===
-# (This section remains unchanged)
 echo -e "${C_BLUE}--- Setting up Security Groups and IAM Role ---${C_NC}"
 ALB_SG_ID=$(aws ec2 create-security-group --group-name "${PROJECT_NAME}-alb-sg" --description "SG for ALB" --vpc-id "$VPC_ID" --query GroupId --output text --region $AWS_REGION)
 aws ec2 authorize-security-group-ingress --group-id "$ALB_SG_ID" --protocol tcp --port 80 --cidr 0.0.0.0/0 --region $AWS_REGION > /dev/null
@@ -83,8 +80,87 @@ aws iam add-role-to-instance-profile --instance-profile-name "$IAM_INSTANCE_PROF
 echo "Waiting for IAM role to propagate..."
 sleep 15
 
+# === 2. S3 Bucket and CloudFront CDN Setup ===
+echo -e "${C_BLUE}--- Creating S3 Bucket & CloudFront CDN ---${C_NC}"
+S3_BUCKET_NAME="ecommerce-static-assets-$RANDOM$RANDOM"
+aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" --create-bucket-configuration LocationConstraint="$AWS_REGION" > /dev/null
+echo "S3 Bucket created: $S3_BUCKET_NAME. It will be kept private."
+
+# Create CloudFront Origin Access Control (OAC) for S3
+OAC_ID=$(aws cloudfront create-origin-access-control --origin-access-control-config "Name=${PROJECT_NAME}-oac,OriginAccessControlOriginType=s3,SigningBehavior=always,SigningProtocol=sigv4" --query "OriginAccessControl.Id" --output text)
+echo "CloudFront Origin Access Control created."
+
+# Create CloudFront Distribution
+S3_ORIGIN_DOMAIN="${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com"
+DISTRIBUTION_CONFIG=$(cat <<EOF
+{
+    "Comment": "CDN for ${PROJECT_NAME}",
+    "Enabled": true,
+    "DefaultRootObject": "index.html",
+    "Origins": {
+        "Quantity": 1,
+        "Items": [
+            {
+                "Id": "S3-${S3_BUCKET_NAME}",
+                "DomainName": "${S3_ORIGIN_DOMAIN}",
+                "S3OriginConfig": {
+                    "OriginAccessIdentity": ""
+                },
+                "OriginAccessControlId": "${OAC_ID}"
+            }
+        ]
+    },
+    "DefaultCacheBehavior": {
+        "TargetOriginId": "S3-${S3_BUCKET_NAME}",
+        "ViewerProtocolPolicy": "redirect-to-https",
+        "AllowedMethods": {
+            "Quantity": 2,
+            "Items": ["GET", "HEAD"],
+            "CachedMethods": {
+                "Quantity": 2,
+                "Items": ["GET", "HEAD"]
+            }
+        },
+        "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+        "MinTTL": 0,
+        "DefaultTTL": 86400,
+        "MaxTTL": 31536000
+    },
+    "CallerReference": "$(date +%s)"
+}
+EOF
+)
+CF_DIST_DATA=$(aws cloudfront create-distribution --distribution-config "${DISTRIBUTION_CONFIG}")
+CF_DIST_ID=$(echo "$CF_DIST_DATA" | jq -r '.Distribution.Id')
+CF_DOMAIN_NAME=$(echo "$CF_DIST_DATA" | jq -r '.Distribution.DomainName')
+echo "CloudFront distribution is being created... ID: $CF_DIST_ID"
+
+# Update S3 bucket policy to allow access only from CloudFront
+S3_POLICY=$(cat <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": {
+        "Sid": "AllowCloudFrontServicePrincipal",
+        "Effect": "Allow",
+        "Principal": {
+            "Service": "cloudfront.amazonaws.com"
+        },
+        "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::${S3_BUCKET_NAME}/*",
+        "Condition": {
+            "StringEquals": {
+                "AWS:SourceArn": "arn:aws:cloudfront::$(aws sts get-caller-identity --query Account --output text):distribution/${CF_DIST_ID}"
+            }
+        }
+    }
+}
+EOF
+)
+aws s3api put-bucket-policy --bucket "$S3_BUCKET_NAME" --policy "$S3_POLICY" > /dev/null
+echo "S3 Bucket Policy updated to grant access to CloudFront only."
+
 # === 3. Database Setup (Aurora Serverless) ===
-# (This section remains unchanged)
+# (This section is unchanged)
 echo -e "${C_BLUE}--- Provisioning Aurora Serverless DB Cluster ---${C_NC}"
 DB_SUBNET_GROUP_NAME="${PROJECT_NAME}-db-subnet-group"
 aws rds create-db-subnet-group --db-subnet-group-name "$DB_SUBNET_GROUP_NAME" --db-subnet-group-description "Subnet group for Aurora" --subnet-ids "$PRIVATE_SUBNET_1" "$PRIVATE_SUBNET_2" --region $AWS_REGION > /dev/null
@@ -97,15 +173,11 @@ AURORA_ENDPOINT=$(aws rds describe-db-clusters --db-cluster-identifier "$CLUSTER
 # === 4. Application Setup (Launch Template & Auto Scaling Group) ===
 echo -e "${C_BLUE}--- Creating Launch Template and Auto Scaling Group ---${C_NC}"
 if [ ! -f "${KEY_NAME}.pem" ]; then
-    aws ec2 create-key-pair --key-name "$KEY_NAME" --query "KeyMaterial" --output text --region $AWS_REGION > "${KEY_NAME}.pem"
-    chmod 400 "${KEY_NAME}.pem"
+    aws ec2 create-key-pair --key-name "$KEY_NAME" --query "KeyMaterial" --output text --region $AWS_REGION > "${KEY_NAME}.pem"; chmod 400 "${KEY_NAME}.pem"
 fi
-S3_BUCKET_NAME="ecommerce-static-assets-$RANDOM$RANDOM"
-aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" --create-bucket-configuration LocationConstraint="$AWS_REGION" > /dev/null
-POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"PublicReadAssets\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"s3:GetObject\",\"Resource\":\"arn:aws:s3:::$S3_BUCKET_NAME/*\"}]}"
-aws s3api put-bucket-policy --bucket "$S3_BUCKET_NAME" --policy "$POLICY" --region $AWS_REGION > /dev/null
 
 # This script runs on each EC2 instance at boot (UserData)
+# NOW USES THE CLOUDFRONT DOMAIN NAME
 USER_DATA=$(cat <<EOF
 #!/bin/bash
 set -e
@@ -120,22 +192,25 @@ cd /var/www/html
 rm -f index.html
 git clone ${GIT_REPO_URL} .
 
-if ! aws s3 ls s3://${S3_BUCKET_NAME}/assets --region ${AWS_REGION}; then
-    aws s3 cp /var/www/html/${APP_FOLDER_NAME}/assets s3://${S3_BUCKET_NAME}/assets --recursive --region ${AWS_REGION}
-fi
+# Upload assets to S3
+aws s3 cp /var/www/html/${APP_FOLDER_NAME}/assets s3://${S3_BUCKET_NAME}/assets --recursive --region ${AWS_REGION}
 
+# Fetch DB password from Secrets Manager
 DB_PASS=\$(aws secretsmanager get-secret-value --secret-id ${SECRET_NAME} --query SecretString --output text --region ${AWS_REGION})
 
+# Configure PHP app
 CONFIG_FILE="/var/www/html/${APP_FOLDER_NAME}/admin/inc/config.php"
 sed -i "s|\\\$dbhost = '.*';|\\\$dbhost = '${AURORA_ENDPOINT}';|" \$CONFIG_FILE
 sed -i "s|\\\$dbname = '.*';|\\\$dbname = 'ecommercedb';|" \$CONFIG_FILE
 sed -i "s|\\\$dbuser = '.*';|\\\$dbuser = 'admin';|" \$CONFIG_FILE
 sed -i "s|\\\$dbpass = '.*';|\\\$dbpass = '\$DB_PASS';|" \$CONFIG_FILE
 
-S3_ASSET_URL="https://${S3_BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/assets/"
-find /var/www/html/${APP_FOLDER_NAME}/ -type f -name "*.php" -exec sed -i "s|../assets/|\${S3_ASSET_URL}|g" {} +
-find /var/www/html/${APP_FOLDER_NAME}/ -type f -name "*.php" -exec sed -i "s|assets/|\${S3_ASSET_URL}|g" {} +
+# Update asset paths to use the CloudFront URL
+CLOUDFRONT_ASSET_URL="https://${CF_DOMAIN_NAME}/assets/"
+find /var/www/html/${APP_FOLDER_NAME}/ -type f -name "*.php" -exec sed -i "s|../assets/|\${CLOUDFRONT_ASSET_URL}|g" {} +
+find /var/www/html/${APP_FOLDER_NAME}/ -type f -name "*.php" -exec sed -i "s|assets/|\${CLOUDFRONT_ASSET_URL}|g" {} +
 
+# Import database schema (leader-only action)
 (
   flock -n 200 || exit 1
   TABLE_COUNT=\$(mysql -h "${AURORA_ENDPOINT}" -u "admin" -p"\$DB_PASS" -D "ecommercedb" -s -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='ecommercedb';")
@@ -150,33 +225,24 @@ systemctl restart apache2
 EOF
 )
 
-LT_ID=$(aws ec2 create-launch-template \
-    --launch-template-name "${PROJECT_NAME}-lt" \
-    --version-description "Initial version" \
-    --launch-template-data "{\"ImageId\":\"$AMI_ID\",\"InstanceType\":\"$INSTANCE_TYPE\",\"KeyName\":\"$KEY_NAME\",\"SecurityGroupIds\":[\"$EC2_SG_ID\"],\"IamInstanceProfile\":{\"Name\":\"$IAM_INSTANCE_PROFILE_NAME\"},\"UserData\":\"$(echo "$USER_DATA" | base64 -w 0)\"}" \
-    --query "LaunchTemplate.LaunchTemplateId" --output text --region $AWS_REGION)
+LT_ID=$(aws ec2 create-launch-template --launch-template-name "${PROJECT_NAME}-lt" --version-description "Initial version" --launch-template-data "{\"ImageId\":\"$AMI_ID\",\"InstanceType\":\"$INSTANCE_TYPE\",\"KeyName\":\"$KEY_NAME\",\"SecurityGroupIds\":[\"$EC2_SG_ID\"],\"IamInstanceProfile\":{\"Name\":\"$IAM_INSTANCE_PROFILE_NAME\"},\"UserData\":\"$(echo "$USER_DATA" | base64 -w 0)\"}" --query "LaunchTemplate.LaunchTemplateId" --output text --region $AWS_REGION)
 
 ASG_NAME="${PROJECT_NAME}-asg"
-aws autoscaling create-auto-scaling-group \
-    --auto-scaling-group-name "$ASG_NAME" \
-    --launch-template "LaunchTemplateId=$LT_ID" \
-    --min-size 1 \
-    --max-size 3 \
-    --desired-capacity 2 \
-    --vpc-zone-identifier "$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2" \
-    --region $AWS_REGION
+aws autoscaling create-auto-scaling-group --auto-scaling-group-name "$ASG_NAME" --launch-template "LaunchTemplateId=$LT_ID" --min-size 1 --max-size 3 --desired-capacity 2 --vpc-zone-identifier "$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2" --region $AWS_REGION
 
 # === 5. Load Balancer Setup ===
+# (This section is unchanged)
 echo -e "${C_BLUE}--- Creating Application Load Balancer ---${C_NC}"
 ALB_ARN=$(aws elbv2 create-load-balancer --name "${PROJECT_NAME}-alb" --subnets "$PUBLIC_SUBNET_1" "$PUBLIC_SUBNET_2" --security-groups "$ALB_SG_ID" --query "LoadBalancers[0].LoadBalancerArn" --output text --region $AWS_REGION)
 TG_ARN=$(aws elbv2 create-target-group --name "${PROJECT_NAME}-tg" --protocol HTTP --port 80 --vpc-id "$VPC_ID" --health-check-path "/${APP_FOLDER_NAME}/index.php" --query "TargetGroups[0].TargetGroupArn" --output text --region $AWS_REGION)
-
 aws autoscaling attach-load-balancer-target-groups --auto-scaling-group-name "$ASG_NAME" --target-group-arns "$TG_ARN" --region $AWS_REGION
-
 aws elbv2 create-listener --load-balancer-arn "$ALB_ARN" --protocol HTTP --port 80 --default-actions "Type=forward,TargetGroupArn=$TG_ARN" --region $AWS_REGION > /dev/null
 
-# === 6. Deployment Complete ===
+# === 6. Finalization ===
+echo "Waiting for CloudFront distribution to deploy... (This may take 5-15 minutes)"
+aws cloudfront wait distribution-deployed --id "$CF_DIST_ID"
+
 ALB_DNS=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --query "LoadBalancers[0].DNSName" --output text --region $AWS_REGION)
 echo -e "\n${C_GREEN}### ✅ DEPLOYMENT COMPLETE! ###${C_NC}"
-echo -e "Access your highly-available website at: ${C_YELLOW}http://${ALB_DNS}/${APP_FOLDER_NAME}/${C_NC}"
-echo -e "It may take a few minutes for the instances to register with the load balancer and pass health checks."
+echo -e "Access your application at: ${C_YELLOW}http://${ALB_DNS}/${APP_FOLDER_NAME}/${C_NC}"
+echo -e "Your static assets are served via CloudFront CDN from: ${C_YELLOW}https://${CF_DOMAIN_NAME}/assets/${C_NC}"
