@@ -1,8 +1,9 @@
 #!/bin/bash
-# CLEANUP SCRIPT FOR THE AUTO SCALING DEMO
+# CLEANUP SCRIPT FOR THE AUTO SCALING DEMO (MUMBAI REGION)
 
 PROJECT_NAME="fashiony-autoscaling-demo"
-AWS_REGION="us-east-1"
+# UPDATED for Mumbai Region
+AWS_REGION="ap-south-1"
 
 echo "This script will delete ALL resources for project: $PROJECT_NAME in region $AWS_REGION"
 read -p "Are you absolutely sure you want to continue? (y/n): " -n 1 -r

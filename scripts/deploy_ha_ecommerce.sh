@@ -15,12 +15,14 @@
 set -e
 
 # --- Configuration ---
-AWS_REGION="us-east-1"
+# UPDATED for Mumbai Region
+AWS_REGION="ap-south-1"
 PROJECT_NAME="fashiony-autoscaling-demo"
 APP_FOLDER_NAME="php_app"
 INSTANCE_TYPE="t2.micro"      # Free Tier eligible
 RDS_INSTANCE_CLASS="db.t2.micro" # Free Tier eligible
-AMI_ID="ami-0c55b159cbfafe1f0" # Ubuntu 22.04 LTS for us-east-1
+# UPDATED with the official Ubuntu 22.04 AMI for ap-south-1
+AMI_ID="ami-0f5ee92e2d63afc18" 
 KEY_NAME="ecommerce-asg-freetier-key"
 
 # --- Terminal Colors ---
@@ -29,7 +31,7 @@ C_GREEN='\033[0;32m'
 C_YELLOW='\033[0;33m'
 C_NC='\033[0m'
 
-echo -e "${C_BLUE}### Starting AWS Auto Scaling (Free Tier Budget) Deployment ###${C_NC}"
+echo -e "${C_BLUE}### Starting AWS Auto Scaling (Free Tier Budget) Deployment in Mumbai ###${C_NC}"
 
 # --- User Input ---
 read -p "Enter your public GitHub repository URL: " GIT_REPO_URL
@@ -95,7 +97,7 @@ aws s3api put-bucket-policy --bucket "$S3_BUCKET_NAME" --policy "$S3_POLICY" > /
 # === 4. RDS MySQL Database (Free Tier) ===
 echo -e "${C_BLUE}--- Provisioning Free Tier RDS MySQL Database ---${C_NC}"
 DB_SUBNET_GROUP_NAME="${PROJECT_NAME}-db-subnet-group"
-aws rds create-db-subnet-group --db-subnet-group-name "$DB_SUBNET_GROUP_NAME" --db-subnet-group-description "Subnet group for RDS" --subnet-ids "$PUBLIC_SUBNET_1" "$PUBLIC_SUBNET_2" > /dev/null
+aws rds create-db-subnet-group --db-subnet-group-name "$DB_SUBNET_GROUP_NAME" --db-subnet-group-description "Subnet group for RDS" --subnet-ids "$PUBLIC_SUBNET_1" "$PUBLIC_SUBNET_2" --region $AWS_REGION > /dev/null
 RDS_DB_ID="${PROJECT_NAME}-db"
 aws rds create-db-instance --db-instance-identifier "$RDS_DB_ID" --db-instance-class "$RDS_INSTANCE_CLASS" --engine mysql --allocated-storage 20 --db-name ecommercedb --master-username admin --master-user-password "$DB_MASTER_PASS" --vpc-security-group-ids "$DB_SG_ID" --db-subnet-group-name "$DB_SUBNET_GROUP_NAME" --no-multi-az --publicly-accessible --region $AWS_REGION > /dev/null
 echo "Waiting for RDS instance to become available..."
