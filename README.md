@@ -1,12 +1,58 @@
-PHP eCommerce AWS Deployment GuideThis document provides a complete guide to deploying the PHP eCommerce application on AWS using a scalable, highly-available, and cost-effective architecture. The deployment is fully automated using a Bash script.The final architecture includes:Application Load Balancer (ALB) to distribute traffic.Auto Scaling Group (ASG) to manage EC2 instances for high availability and scalability.EC2 Instances (t2.micro) as web servers.RDS for MySQL (db.t3.micro) as a managed, Free Tier-eligible database.S3 for storing static assets.CloudFront (CDN) to serve static assets quickly and securely.1. Deployment InstructionsThe recommended way to run the deployment is via AWS CloudShell. This method is the simplest as it bypasses any local network issues and does not require you to install or configure any tools on your computer.Log in to the AWS Console and ensure you are in the Mumbai (ap-south-1) region in the top-right corner.Launch CloudShell by clicking the >_ icon in the top navigation bar.Clone your repository inside the CloudShell terminal:git clone https://github.com/your-username/your-repo-name.git
-Navigate into the project folder:cd your-repo-name
-Make the script executable:chmod +x scripts/deploy_ha_ecommerce.sh
-Run the deployment script:./scripts/deploy_ha_ecommerce.sh
-Follow the prompts:Enter your GitHub repository URL.Enter a secure password for the database.Wait: The deployment process will take approximately 20-25 minutes. Do not close the CloudShell window.2. Post-DeploymentAccess Your WebsiteOnce the script completes, it will output the URL for your website. It will look like this:http://project-name-alb-....ap-south-1.elb.amazonaws.com/php_app/Note: It may take an additional 2-5 minutes for the new servers to pass their health checks. If you see a "503 Service Unavailable" error, please wait a few minutes and refresh the page.Test Auto ScalingGo to the AWS Console in the Mumbai region.Navigate to EC2 > Auto Scaling Groups.Select the group named fashiony-autoscaling-demo-asg.Go to the Instance management tab.Select one of the two running instances, click Actions, and choose Terminate instance.Refresh the list after a minute. You will see the ASG automatically launching a new, healthy instance to replace the one you terminated.3. CRITICAL: CleanupThis architecture uses services that are only free for new accounts for a limited time. To avoid any charges, you must delete all resources when you are finished with your experiment.Make the cleanup script executable:chmod +x scripts/cleanup_ha.sh
-Run the cleanup script:./scripts/cleanup_ha.sh
-This will find and delete every resource created by the deployment script.Appendix: Local Deployment (Advanced)If you prefer to run the script from your own computer instead of CloudShell, you must first install and configure the necessary tools.A.1: Install PrerequisitesFor Ubuntu / Debian:sudo apt update
-sudo apt install git awscli -y
-For macOS (using Homebrew):/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install git awscli
-A.2: Configure the AWS CLIYou must create an IAM User with AdministratorAccess and get an Access Key ID and Secret Access Key.Open your terminal and run:aws configure
-Enter the details when prompted:AWS Access Key ID: Paste your key.AWS Secret Access Key: Paste your secret.Default region name: ap-south-1Default output format: jsonAfter completing these steps, you can run the deployment script from your local terminal.
+# PHP eCommerce AWS Deployment Guide
+
+This repository contains a fully-automated deployment script to host a PHP-based eCommerce application on AWS using a scalable, highly-available, and cost-effective architecture.
+
+## 🏗️ Architecture Overview
+
+- **Application Load Balancer (ALB)** – Distributes incoming HTTP traffic.
+- **Auto Scaling Group (ASG)** – Manages EC2 instances for high availability and scaling.
+- **EC2 Instances** – Runs the PHP eCommerce application.
+- **Amazon RDS (MySQL)** – Managed, Free Tier-eligible MySQL database.
+- **Amazon S3** – Stores static assets like images, CSS, JS.
+- **Amazon CloudFront** – Speeds up delivery of static content via CDN.
+
+---
+
+## 🚀 Deployment Instructions
+
+### ✅ Recommended: Deploy using AWS CloudShell
+
+1. **Login to the AWS Console** and switch to the `ap-south-1` (Mumbai) region.
+2. Launch **CloudShell** by clicking the `>_` icon on the top navigation bar.
+3. Clone your repository:
+   
+   git clone https://github.com/ganeshvissapragada/cloud_see.git
+   cd cloud_see
+   
+4 .Make the deployment script executable:
+    
+  chmod +x scripts/deploy_ha_ecommerce.sh
+
+5.Run the deployment script:
+
+  ./scripts/deploy_ha_ecommerce.sh
+
+6.Follow the on-screen prompts:
+
+Enter your GitHub repository URL.
+
+https://github.com/ganeshvissapragada/cloud_see.git
+
+Enter a secure password for the MySQL database.
+
+⏳ The deployment process takes 20–25 minutes. Do not close CloudShell during this time.
+
+7.Cleanup (Important!)
+AWS services like RDS and EC2 may incur charges if not removed. Run the cleanup script after you're done.
+
+Make the cleanup script executable:
+chmod +x scripts/cleanup_ha.sh
+Run the cleanup script:
+./scripts/cleanup_ha.sh
+
+
+
+
+
+
+
