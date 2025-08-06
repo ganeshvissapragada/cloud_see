@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ======================================================================================
-# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - FINAL FIX)
+# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - FINAL FIX v2)
 #
-# This script includes the fix for the VPC DNS Hostnames and Support issue.
+# This script includes the fix for the RDS Engine Version incompatibility.
 # ======================================================================================
 
 set -e
@@ -14,6 +14,8 @@ PROJECT_NAME="fashiony-autoscaling-demo"
 APP_FOLDER_NAME="php_app"
 INSTANCE_TYPE="t2.micro"
 RDS_INSTANCE_CLASS="db.t2.micro"
+# ** FIX APPLIED HERE: Specify a compatible MySQL engine version **
+RDS_ENGINE_VERSION="8.0.35"
 AMI_ID="ami-0f5ee92e2d63afc18" # Official Ubuntu 22.04 AMI for ap-south-1
 KEY_NAME="ecommerce-asg-freetier-key"
 
@@ -41,7 +43,6 @@ VPC_ID=$(aws ec2 create-vpc --cidr-block 10.0.0.0/16 --query Vpc.VpcId --output 
 aws ec2 create-tags --resources "$VPC_ID" --tags Key=Name,Value="${PROJECT_NAME}-vpc" --region $AWS_REGION
 echo "VPC Created: ${VPC_ID}"
 
-# ** FIX APPLIED HERE: Enable DNS Hostnames and DNS Support for the VPC **
 echo "Enabling DNS Hostnames for VPC..."
 aws ec2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-hostnames "{\"Value\":true}" --region $AWS_REGION
 echo "Enabling DNS Support for VPC..."
@@ -130,8 +131,21 @@ DB_SUBNET_GROUP_NAME="${PROJECT_NAME}-db-subnet-group"
 echo "Creating RDS DB Subnet Group..."
 aws rds create-db-subnet-group --db-subnet-group-name "$DB_SUBNET_GROUP_NAME" --db-subnet-group-description "Subnet group for RDS" --subnet-ids "$PUBLIC_SUBNET_1" "$PUBLIC_SUBNET_2" --region $AWS_REGION > /dev/null
 RDS_DB_ID="${PROJECT_NAME}-db"
-echo "Creating RDS DB Instance (db.t2.micro). This may take 5-10 minutes..."
-aws rds create-db-instance --db-instance-identifier "$RDS_DB_ID" --db-instance-class "$RDS_INSTANCE_CLASS" --engine mysql --allocated-storage 20 --db-name ecommercedb --master-username admin --master-user-password "$DB_MASTER_PASS" --vpc-security-group-ids "$DB_SG_ID" --db-subnet-group-name "$DB_SUBNET_GROUP_NAME" --no-multi-az --publicly-accessible --region $AWS_REGION > /dev/null
+echo "Creating RDS DB Instance (db.t2.micro) with MySQL version ${RDS_ENGINE_VERSION}. This may take 5-10 minutes..."
+aws rds create-db-instance \
+    --db-instance-identifier "$RDS_DB_ID" \
+    --db-instance-class "$RDS_INSTANCE_CLASS" \
+    --engine mysql \
+    --engine-version "$RDS_ENGINE_VERSION" \
+    --allocated-storage 20 \
+    --db-name ecommercedb \
+    --master-username admin \
+    --master-user-password "$DB_MASTER_PASS" \
+    --vpc-security-group-ids "$DB_SG_ID" \
+    --db-subnet-group-name "$DB_SUBNET_GROUP_NAME" \
+    --no-multi-az \
+    --publicly-accessible \
+    --region $AWS_REGION > /dev/null
 echo "Waiting for RDS instance to become available..."
 aws rds wait db-instance-available --db-instance-identifier "$RDS_DB_ID" --region $AWS_REGION
 RDS_ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier "$RDS_DB_ID" --query "DBInstances[0].Endpoint.Address" --output text --region $AWS_REGION)
