@@ -22,6 +22,8 @@ This repository contains a fully-automated deployment script to host a PHP-based
 3. Clone your repository:
    
    git clone https://github.com/ganeshvissapragada/cloud_see.git
+
+   
    cd cloud_see
    
 4 .Make the deployment script executable:
