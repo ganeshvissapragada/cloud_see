@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ======================================================================================
-# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - VERBOSE)
+# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - FINAL FIX)
 #
-# This script provides detailed echo statements for each step.
+# This script includes the fix for the VPC DNS Hostnames and Support issue.
 # ======================================================================================
 
 set -e
@@ -40,6 +40,12 @@ echo "Creating VPC..."
 VPC_ID=$(aws ec2 create-vpc --cidr-block 10.0.0.0/16 --query Vpc.VpcId --output text --region $AWS_REGION)
 aws ec2 create-tags --resources "$VPC_ID" --tags Key=Name,Value="${PROJECT_NAME}-vpc" --region $AWS_REGION
 echo "VPC Created: ${VPC_ID}"
+
+# ** FIX APPLIED HERE: Enable DNS Hostnames and DNS Support for the VPC **
+echo "Enabling DNS Hostnames for VPC..."
+aws ec2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-hostnames "{\"Value\":true}" --region $AWS_REGION
+echo "Enabling DNS Support for VPC..."
+aws ec2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-support "{\"Value\":true}" --region $AWS_REGION
 
 echo "Creating Public Subnet 1 in ${AWS_REGION}a..."
 PUBLIC_SUBNET_1=$(aws ec2 create-subnet --vpc-id "$VPC_ID" --cidr-block 10.0.1.0/24 --availability-zone "${AWS_REGION}a" --query Subnet.SubnetId --output text --region $AWS_REGION)
@@ -141,7 +147,6 @@ else
     echo "Key Pair '${KEY_NAME}.pem' already exists."
 fi
 
-# The UserData script is now defined within the Launch Template command
 echo "Creating EC2 Launch Template..."
 USER_DATA=$(cat <<EOF
 #!/bin/bash
