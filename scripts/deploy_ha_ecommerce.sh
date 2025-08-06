@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ======================================================================================
-# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - FINAL FIX v6)
+# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - FINAL FIX v7)
 #
-# This script corrects the port 80 typo for the ALB Security Group.
+# This script corrects the security group definition in the EC2 Launch Template.
 # ======================================================================================
 
 set -e
@@ -78,7 +78,6 @@ echo "Network setup complete."
 echo -e "\n${C_BLUE}--- Setting up Security Groups and IAM Role ---${C_NC}"
 echo "Creating Security Group for Load Balancer..."
 ALB_SG_ID=$(aws ec2 create-security-group --group-name "${PROJECT_NAME}-alb-sg" --description "SG for ALB" --vpc-id "$VPC_ID" --query GroupId --output text --region $AWS_REGION)
-# ** FIX APPLIED HERE: Changed port from 8D to 80 **
 aws ec2 authorize-security-group-ingress --group-id "$ALB_SG_ID" --protocol tcp --port 80 --cidr 0.0.0.0/0 --region $AWS_REGION > /dev/null
 echo "Load Balancer SG Created: ${ALB_SG_ID}"
 
@@ -201,10 +200,11 @@ chown -R www-data:www-data /var/www/html
 systemctl restart apache2
 EOF
 )
+# ** FIX APPLIED HERE: Removed the redundant top-level "SecurityGroupIds" parameter **
 LT_ID=$(aws ec2 create-launch-template \
     --launch-template-name "${PROJECT_NAME}-lt" \
     --version-description "Initial version" \
-    --launch-template-data "{\"ImageId\":\"$AMI_ID\",\"InstanceType\":\"$INSTANCE_TYPE\",\"KeyName\":\"$KEY_NAME\",\"SecurityGroupIds\":[\"$EC2_SG_ID\"],\"IamInstanceProfile\":{\"Name\":\"$IAM_INSTANCE_PROFILE_NAME\"},\"UserData\":\"$(echo "$USER_DATA" | base64 -w 0)\",\"NetworkInterfaces\":[{\"AssociatePublicIpAddress\":true,\"DeviceIndex\":0,\"Groups\":[\"$EC2_SG_ID\"]}]}" \
+    --launch-template-data "{\"ImageId\":\"$AMI_ID\",\"InstanceType\":\"$INSTANCE_TYPE\",\"KeyName\":\"$KEY_NAME\",\"IamInstanceProfile\":{\"Name\":\"$IAM_INSTANCE_PROFILE_NAME\"},\"UserData\":\"$(echo "$USER_DATA" | base64 -w 0)\",\"NetworkInterfaces\":[{\"AssociatePublicIpAddress\":true,\"DeviceIndex\":0,\"Groups\":[\"$EC2_SG_ID\"]}]}" \
     --query "LaunchTemplate.LaunchTemplateId" --output text --region $AWS_REGION)
 echo "Launch Template Created: ${LT_ID}"
 
