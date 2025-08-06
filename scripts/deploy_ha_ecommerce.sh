@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # ======================================================================================
-# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - FINAL FIX v5)
+# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - FINAL FIX v6)
 #
-# This script uses db.t3.micro and the specific MySQL 5.7.44 version
-# confirmed to be available in your account for the ap-south-1 region.
+# This script corrects the port 80 typo for the ALB Security Group.
 # ======================================================================================
 
 set -e
@@ -14,9 +13,7 @@ AWS_REGION="ap-south-1"
 PROJECT_NAME="fashiony-autoscaling-demo"
 APP_FOLDER_NAME="php_app"
 INSTANCE_TYPE="t2.micro"
-# ** FIX APPLIED: Use the newer db.t3.micro instance class **
 RDS_INSTANCE_CLASS="db.t3.micro"
-# ** And the confirmed compatible MySQL engine version **
 RDS_ENGINE_VERSION="5.7.44"
 AMI_ID="ami-0f5ee92e2d63afc18" # Official Ubuntu 22.04 AMI for ap-south-1
 KEY_NAME="ecommerce-asg-freetier-key"
@@ -81,7 +78,8 @@ echo "Network setup complete."
 echo -e "\n${C_BLUE}--- Setting up Security Groups and IAM Role ---${C_NC}"
 echo "Creating Security Group for Load Balancer..."
 ALB_SG_ID=$(aws ec2 create-security-group --group-name "${PROJECT_NAME}-alb-sg" --description "SG for ALB" --vpc-id "$VPC_ID" --query GroupId --output text --region $AWS_REGION)
-aws ec2 authorize-security-group-ingress --group-id "$ALB_SG_ID" --protocol tcp --port 8D --cidr 0.0.0.0/0 --region $AWS_REGION > /dev/null
+# ** FIX APPLIED HERE: Changed port from 8D to 80 **
+aws ec2 authorize-security-group-ingress --group-id "$ALB_SG_ID" --protocol tcp --port 80 --cidr 0.0.0.0/0 --region $AWS_REGION > /dev/null
 echo "Load Balancer SG Created: ${ALB_SG_ID}"
 
 echo "Creating Security Group for EC2 Instances..."
@@ -227,7 +225,7 @@ echo -e "\n${C_BLUE}--- Creating Application Load Balancer ---${C_NC}"
 echo "Creating Load Balancer..."
 ALB_ARN=$(aws elbv2 create-load-balancer --name "${PROJECT_NAME}-alb" --subnets "$PUBLIC_SUBNET_1" "$PUBLIC_SUBNET_2" --security-groups "$ALB_SG_ID" --query "LoadBalancers[0].LoadBalancerArn" --output text --region $AWS_REGION)
 echo "Creating Target Group..."
-TG_ARN=$(aws elbv2 create-target-group --name "${PROJECT_NAME}-tg" --protocol HTTP --port 8D --vpc-id "$VPC_ID" --health-check-path "/${APP_FOLDER_NAME}/index.php" --query "TargetGroups[0].TargetGroupArn" --output text --region $AWS_REGION)
+TG_ARN=$(aws elbv2 create-target-group --name "${PROJECT_NAME}-tg" --protocol HTTP --port 80 --vpc-id "$VPC_ID" --health-check-path "/${APP_FOLDER_NAME}/index.php" --query "TargetGroups[0].TargetGroupArn" --output text --region $AWS_REGION)
 echo "Attaching Target Group to Auto Scaling Group..."
 aws autoscaling attach-load-balancer-target-groups --auto-scaling-group-name "$ASG_NAME" --target-group-arns "$TG_ARN" --region $AWS_REGION
 echo "Creating Load Balancer Listener..."
