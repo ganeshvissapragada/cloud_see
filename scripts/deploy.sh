@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ======================================================================================
-# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - NO CDN)
+# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - NO CDN - FINAL FIX)
 #
 # This script deploys the application and serves static assets
-# directly from a public S3 bucket.
+# directly from a public S3 bucket. It uses the corrected RDS engine version.
 # ======================================================================================
 
 set -e
@@ -15,7 +15,8 @@ PROJECT_NAME="fashiony-autoscaling-demo"
 APP_FOLDER_NAME="php_app"
 INSTANCE_TYPE="t2.micro"
 RDS_INSTANCE_CLASS="db.t3.micro"
-RDS_ENGINE_VERSION="5.7.44"
+# ** FIX APPLIED: Using the confirmed compatible MySQL engine version **
+RDS_ENGINE_VERSION="8.0.37"
 AMI_ID="ami-0f5ee92e2d63afc18" # Official Ubuntu 22.04 AMI for ap-south-1
 KEY_NAME="ecommerce-asg-freetier-key"
 
