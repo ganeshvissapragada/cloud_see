@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # ======================================================================================
-# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - NO CDN - FINAL FIX)
+# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - S3 FIX)
 #
-# This script deploys the application and serves static assets
-# directly from a public S3 bucket. It uses the corrected RDS engine version.
+# This script includes the fix for the S3 Block Public Access setting.
 # ======================================================================================
 
 set -e
@@ -15,8 +14,7 @@ PROJECT_NAME="fashiony-autoscaling-demo"
 APP_FOLDER_NAME="php_app"
 INSTANCE_TYPE="t2.micro"
 RDS_INSTANCE_CLASS="db.t3.micro"
-# ** FIX APPLIED: Using the confirmed compatible MySQL engine version **
-RDS_ENGINE_VERSION="8.0.37"
+RDS_ENGINE_VERSION="8.0.37" # Using the version confirmed from your account
 AMI_ID="ami-0f5ee92e2d63afc18" # Official Ubuntu 22.04 AMI for ap-south-1
 KEY_NAME="ecommerce-asg-freetier-key"
 
@@ -91,7 +89,12 @@ echo -e "\n${C_BLUE}--- Creating Public S3 Bucket ---${C_NC}"
 S3_BUCKET_NAME="ecommerce-static-assets-$RANDOM$RANDOM"
 echo "Creating S3 Bucket: ${S3_BUCKET_NAME}..."
 aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" --create-bucket-configuration LocationConstraint="$AWS_REGION" > /dev/null
-echo "Making S3 Bucket public..."
+
+# ** FIX APPLIED HERE: Remove the account-level Block Public Access setting for this new bucket **
+echo "Disabling Block Public Access for the new bucket..."
+aws s3api delete-public-access-block --bucket "$S3_BUCKET_NAME"
+
+echo "Making S3 Bucket public by applying a bucket policy..."
 S3_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"PublicReadGetObject\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"s3:GetObject\",\"Resource\":\"arn:aws:s3:::${S3_BUCKET_NAME}/*\"}]}"
 aws s3api put-bucket-policy --bucket "$S3_BUCKET_NAME" --policy "$S3_POLICY" > /dev/null
 echo "S3 setup complete."
