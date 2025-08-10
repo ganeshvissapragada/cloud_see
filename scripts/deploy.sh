@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # ======================================================================================
-# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - S3 & RDS-wait FIX)
+# AWS Auto Scaling on a Free Tier Budget (MUMBAI REGION - NO CDN - FINAL FIX)
 #
-# This script deploys the application, configures S3 (handles Block Public Access),
-# and waits for RDS while showing status/events (better diagnostics).
+# This script deploys the application and serves static assets
+# directly from a public S3 bucket. It uses the corrected RDS engine version.
 # ======================================================================================
 
-set -euo pipefail
+set -e
 
 # --- Configuration ---
 AWS_REGION="ap-south-1"
@@ -15,7 +15,8 @@ PROJECT_NAME="fashiony-autoscaling-demo"
 APP_FOLDER_NAME="php_app"
 INSTANCE_TYPE="t2.micro"
 RDS_INSTANCE_CLASS="db.t3.micro"
-RDS_ENGINE_VERSION="8.0.37" # Using the version confirmed from your account
+# ** FIX APPLIED: Using the confirmed compatible MySQL engine version **
+RDS_ENGINE_VERSION="8.0.37"
 AMI_ID="ami-0f5ee92e2d63afc18" # Official Ubuntu 22.04 AMI for ap-south-1
 KEY_NAME="ecommerce-asg-freetier-key"
 
@@ -85,48 +86,25 @@ echo "Waiting for IAM role to propagate..."
 sleep 15
 echo "IAM setup complete."
 
-# === 3. S3 Bucket Setup (robust against Block Public Access) ===
+# === 3. S3 Bucket Setup ===
 echo -e "\n${C_BLUE}--- Creating Public S3 Bucket ---${C_NC}"
 S3_BUCKET_NAME="ecommerce-static-assets-$RANDOM$RANDOM"
 echo "Creating S3 Bucket: ${S3_BUCKET_NAME}..."
 aws s3api create-bucket --bucket "$S3_BUCKET_NAME" --region "$AWS_REGION" --create-bucket-configuration LocationConstraint="$AWS_REGION" > /dev/null
+echo "Disabling Block Public Access for the new bucket..."
+aws s3api delete-public-access-block --bucket "$S3_BUCKET_NAME"
+echo "Making S3 Bucket public by applying a bucket policy..."
+S3_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"PublicReadGetObject\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"s3:GetObject\",\"Resource\":\"arn:aws:s3:::${S3_BUCKET_NAME}/*\"}]}"
+aws s3api put-bucket-policy --bucket "$S3_BUCKET_NAME" --policy "$S3_POLICY" > /dev/null
+echo "S3 setup complete."
 
-echo "Clearing bucket-level Block Public Access (bucket-level)..."
-aws s3api put-public-access-block \
-  --bucket "$S3_BUCKET_NAME" \
-  --public-access-block-configuration '{"BlockPublicAcls":false,"IgnorePublicAcls":false,"BlockPublicPolicy":false,"RestrictPublicBuckets":false}' \
-  --region "$AWS_REGION"
-
-echo "Applying public-read bucket policy..."
-read -r -d '' S3_POLICY <<EOF || true
-{"Version":"2012-10-17","Statement":[{"Sid":"PublicReadGetObject","Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"arn:aws:s3:::${S3_BUCKET_NAME}/*"}]}
-EOF
-
-if aws s3api put-bucket-policy --bucket "$S3_BUCKET_NAME" --policy "$S3_POLICY" --region "$AWS_REGION"; then
-    echo "S3 bucket policy applied successfully."
-else
-    # If it fails, give actionable advice (likely account-level block)
-    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region "$AWS_REGION" || echo "unknown")
-    echo -e "${C_YELLOW}Warning:${C_NC} Could not apply bucket policy. This is usually caused by an account-level 'Block Public Access' setting."
-    echo "If you want this bucket public, either:"
-    echo "  1) Disable Block Public Access for the account in S3 Console (Settings for this account), OR"
-    echo "  2) Use the console to allow the public policy for this bucket."
-    echo "AWS Account ID: ${ACCOUNT_ID}"
-    echo "Bucket name: ${S3_BUCKET_NAME}"
-    echo -e "${C_YELLOW}Continuing script, but S3 assets may not be publicly readable until the policy is applied.${C_NC}"
-fi
-echo "S3 setup (attempted)."
-
-# === 4. RDS MySQL Database (Free Tier) with improved wait & diagnostics ===
+# === 4. RDS MySQL Database (Free Tier) ===
 echo -e "\n${C_BLUE}--- Provisioning Free Tier RDS MySQL Database ---${C_NC}"
 DB_SUBNET_GROUP_NAME="${PROJECT_NAME}-db-subnet-group"
 echo "Creating RDS DB Subnet Group..."
 aws rds create-db-subnet-group --db-subnet-group-name "$DB_SUBNET_GROUP_NAME" --db-subnet-group-description "Subnet group for RDS" --subnet-ids "$PUBLIC_SUBNET_1" "$PUBLIC_SUBNET_2" --region $AWS_REGION > /dev/null
-
 RDS_DB_ID="${PROJECT_NAME}-db"
-echo "Creating RDS DB Instance (${RDS_INSTANCE_CLASS}) with MySQL version ${RDS_ENGINE_VERSION}. This may take 5-20 minutes..."
-
-# show the create call output (don't swallow errors)
+echo "Creating RDS DB Instance (${RDS_INSTANCE_CLASS}) with MySQL version ${RDS_ENGINE_VERSION}. This may take 5-10 minutes..."
 aws rds create-db-instance \
     --db-instance-identifier "$RDS_DB_ID" \
     --db-instance-class "$RDS_INSTANCE_CLASS" \
@@ -140,55 +118,11 @@ aws rds create-db-instance \
     --db-subnet-group-name "$DB_SUBNET_GROUP_NAME" \
     --no-multi-az \
     --publicly-accessible \
-    --region $AWS_REGION
-
-# Robust polling loop with diagnostics
-WAIT_INTERVAL=15            # seconds between polls
-MAX_ATTEMPTS=120            # 120 * 15s = 30 minutes max wait
-attempt=0
-
-echo "Waiting for RDS instance to become available (will print status and recent RDS events)..."
-while true; do
-    ((attempt++))
-    status=$(aws rds describe-db-instances --db-instance-identifier "$RDS_DB_ID" --region $AWS_REGION --query "DBInstances[0].DBInstanceStatus" --output text 2>/dev/null || echo "not-found")
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Attempt $attempt/$MAX_ATTEMPTS — RDS status: $status"
-
-    if [ "$status" = "available" ]; then
-        RDS_ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier "$RDS_DB_ID" --query "DBInstances[0].Endpoint.Address" --output text --region $AWS_REGION)
-        echo -e "${C_GREEN}RDS is available at: ${RDS_ENDPOINT}${C_NC}"
-        break
-    fi
-
-    if [ "$status" = "not-found" ]; then
-        echo -e "${C_YELLOW}RDS instance not found yet. It may still be provisioning. Will keep polling...${C_NC}"
-    fi
-
-    # Show recent RDS events every 4 attempts (approx every minute)
-    if (( attempt % 4 == 0 )); then
-        echo "Recent RDS events (last 60 minutes):"
-        aws rds describe-events --source-identifier "$RDS_DB_ID" --source-type db-instance --duration 60 --region $AWS_REGION --output text || true
-    fi
-
-    # Check for common terminal/failure statuses
-    if [ "$status" = "failed" ] || [ "$status" = "incompatible-restore" ] || [ "$status" = "incompatible-parameter-group" ] || [ "$status" = "deleting" ]; then
-        echo -e "${C_YELLOW}RDS reported terminal status: $status${C_NC}"
-        echo "Dumping RDS events (last 120 minutes):"
-        aws rds describe-events --source-identifier "$RDS_DB_ID" --source-type db-instance --duration 120 --region $AWS_REGION --output text || true
-        echo "Exiting due to RDS error state."
-        exit 1
-    fi
-
-    if (( attempt >= MAX_ATTEMPTS )); then
-        echo -e "${C_YELLOW}Timed out waiting for RDS to become available after $((WAIT_INTERVAL*MAX_ATTEMPTS/60)) minutes.${C_NC}"
-        echo "Last known status: $status"
-        echo "Dumping recent RDS events:"
-        aws rds describe-events --source-identifier "$RDS_DB_ID" --source-type db-instance --duration 240 --region $AWS_REGION --output text || true
-        echo "You can check the RDS console and events for detailed failure reason."
-        exit 2
-    fi
-
-    sleep $WAIT_INTERVAL
-done
+    --region $AWS_REGION > /dev/null
+echo "Waiting for RDS instance to become available..."
+aws rds wait db-instance-available --db-instance-identifier "$RDS_DB_ID" --region $AWS_REGION
+RDS_ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier "$RDS_DB_ID" --query "DBInstances[0].Endpoint.Address" --output text --region $AWS_REGION)
+echo "RDS Database is available at: ${RDS_ENDPOINT}"
 
 # === 5. Application Setup (Launch Template & Auto Scaling Group) ===
 echo -e "\n${C_BLUE}--- Creating Launch Template and Auto Scaling Group ---${C_NC}"
@@ -227,14 +161,13 @@ find /var/www/html/${APP_FOLDER_NAME}/ -type f -name "*.php" -exec sed -i "s|../
 find /var/www/html/${APP_FOLDER_NAME}/ -type f -name "*.php" -exec sed -i "s|assets/|\${S3_ASSET_URL}|g" {} +
 
 # Import database schema
-mysql -h "${RDS_ENDPOINT}" -u "admin" -p"${DB_MASTER_PASS}" "ecommercedb" < /var/www/html/database/fashiony_ogs.sql || true
-mysql -h "${RDS_ENDPOINT}" -u "admin" -p"${DB_MASTER_PASS}" "ecommercedb" -e "UPDATE settings SET footer_text = '' WHERE footer_text LIKE '%Virtual University%';" || true
+mysql -h "${RDS_ENDPOINT}" -u "admin" -p"${DB_MASTER_PASS}" "ecommercedb" < /var/www/html/database/fashiony_ogs.sql
+mysql -h "${RDS_ENDPOINT}" -u "admin" -p"${DB_MASTER_PASS}" "ecommercedb" -e "UPDATE settings SET footer_text = '' WHERE footer_text LIKE '%Virtual University%';"
 
 chown -R www-data:www-data /var/www/html
-systemctl restart apache2 || true
+systemctl restart apache2
 EOF
 )
-
 LT_ID=$(aws ec2 create-launch-template \
     --launch-template-name "${PROJECT_NAME}-lt" \
     --version-description "Initial version" \
